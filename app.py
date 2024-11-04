@@ -1,0 +1,380 @@
+from flask import Flask, request, jsonify
+import subprocess
+import os
+import socket
+import json
+from contextlib import closing
+
+app = Flask(__name__)
+
+class IPTablesManager:
+    def __init__(self):
+        self.rules = {}  # 存储当前的转发规则
+        self.default_start_port = 1000  # 设置默认起始端口
+        # 默认保留的系统端口
+        self.reserved_ports = {22, 80, 53, 21, 25, 23, 110, 143, 888}
+        # 规则文件路径
+        self.rules_file = '/app/data/iptables_rules.json'
+        # 加载保存的规则
+        self.load_rules()
+
+    def load_rules(self):
+        """从文件加载保存的规则"""
+        try:
+            if os.path.exists(self.rules_file):
+                with open(self.rules_file, 'r') as f:
+                    saved_rules = json.load(f)
+                # 清空现有规则
+                self.clear_all_iptables_rules()
+                # 重新应用已保存的规则
+                for port, rule in saved_rules.items():
+                    self.add_rule(
+                        rule['local_port'],
+                        rule['target_ip'],
+                        rule['target_port']
+                    )
+        except Exception as e:
+            print(f"Error loading rules: {str(e)}")
+            self.rules = {}
+
+    def save_rules(self):
+        """保存规则到文件"""
+        try:
+            with open(self.rules_file, 'w') as f:
+                json.dump(self.rules, f, indent=2)
+        except Exception as e:
+            print(f"Error saving rules: {str(e)}")
+
+    def clear_all_iptables_rules(self):
+        """清除所有 iptables 转发规则"""
+        try:
+            # 清除 nat 表的 PREROUTING 链
+            subprocess.run(['iptables', '-t', 'nat', '-F', 'PREROUTING'])
+            # 清除 nat 表的 POSTROUTING 链
+            subprocess.run(['iptables', '-t', 'nat', '-F', 'POSTROUTING'])
+            # 清除 filter 表的 FORWARD 链
+            subprocess.run(['iptables', '-F', 'FORWARD'])
+        except subprocess.CalledProcessError as e:
+            print(f"Error clearing iptables rules: {str(e)}")
+
+    def is_port_open(self, port):
+        """检查端口是否可用（未被任何服务占用）"""
+        try:
+            # 检查 TCP 端口
+            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+                if sock.connect_ex(('127.0.0.1', port)) == 0:
+                    return False  # 端口被占用
+            
+            # 检查是否是保留端口
+            if port in self.reserved_ports:
+                return False
+
+            # 检查是否被 iptables 规则占用
+            return not self.is_port_in_use_iptables(port)
+        except:
+            return False
+
+    def is_port_in_use_iptables(self, port):
+        """检查端口是否被 iptables 规则占用"""
+        return str(port) in self.rules
+
+    def is_port_in_use(self, port):
+        """综合检查端口是否被占用"""
+        return not self.is_port_open(port)
+
+    def find_next_available_port(self, start_port):
+        """查找下一个可用端口"""
+        current_port = start_port
+        while self.is_port_in_use(current_port):
+            current_port += 1
+            if current_port > 65535:  # 确保不超过最大端口号
+                raise ValueError("No available ports found")
+        return current_port
+
+    def add_rule(self, local_port, target_ip, target_port):
+        """添加iptables转发规则"""
+        try:
+            # 添加PREROUTING规则进行端口转发
+            subprocess.run([
+                'iptables', '-t', 'nat', '-A', 'PREROUTING',
+                '-p', 'tcp', '--dport', str(local_port),
+                '-j', 'DNAT', '--to-destination', f'{target_ip}:{target_port}'
+            ], check=True)
+            
+            # 添加POSTROUTING规则进行源地址转换
+            subprocess.run([
+                'iptables', '-t', 'nat', '-A', 'POSTROUTING',
+                '-p', 'tcp', '-d', target_ip, '--dport', str(target_port),
+                '-j', 'MASQUERADE'
+            ], check=True)
+            
+            # 添加FORWARD规则允许转发
+            subprocess.run([
+                'iptables', '-A', 'FORWARD',
+                '-p', 'tcp', '-d', target_ip, '--dport', str(target_port),
+                '-j', 'ACCEPT'
+            ], check=True)
+            
+            subprocess.run([
+                'iptables', '-A', 'FORWARD',
+                '-p', 'tcp', '-s', target_ip, '--sport', str(target_port),
+                '-j', 'ACCEPT'
+            ], check=True)
+            
+            # 保存规则到内存和文件
+            self.rules[str(local_port)] = {
+                'local_port': local_port,
+                'target_ip': target_ip,
+                'target_port': target_port
+            }
+            self.save_rules()
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def delete_rule(self, local_port):
+        """删除指定端口的转发规则"""
+        if str(local_port) not in self.rules:
+            return False
+        
+        rule = self.rules[str(local_port)]
+        try:
+            # 删除PREROUTING规则
+            subprocess.run([
+                'iptables', '-t', 'nat', '-D', 'PREROUTING',
+                '-p', 'tcp', '--dport', str(local_port),
+                '-j', 'DNAT', '--to-destination', 
+                f'{rule["target_ip"]}:{rule["target_port"]}'
+            ], check=True)
+            
+            # 删除POSTROUTING规则
+            subprocess.run([
+                'iptables', '-t', 'nat', '-D', 'POSTROUTING',
+                '-p', 'tcp', '-d', rule["target_ip"], '--dport', str(rule["target_port"]),
+                '-j', 'MASQUERADE'
+            ], check=True)
+            
+            # 删除FORWARD规则
+            subprocess.run([
+                'iptables', '-D', 'FORWARD',
+                '-p', 'tcp', '-d', rule["target_ip"], '--dport', str(rule["target_port"]),
+                '-j', 'ACCEPT'
+            ], check=True)
+            
+            subprocess.run([
+                'iptables', '-D', 'FORWARD',
+                '-p', 'tcp', '-s', rule["target_ip"], '--sport', str(rule["target_port"]),
+                '-j', 'ACCEPT'
+            ], check=True)
+            
+            # 从存储中删除规则并保存
+            del self.rules[str(local_port)]
+            self.save_rules()
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def get_all_rules(self):
+        """获取所有转发规则"""
+        return list(self.rules.values())
+
+    def get_system_used_ports(self):
+        """获取系统当前使用的所有端口"""
+        used_ports = set()
+        
+        try:
+            # 检查 TCP 端口
+            output = subprocess.check_output(['netstat', '-tln']).decode()
+            for line in output.split('\n')[2:]:  # 跳过头部
+                if line.strip():
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        addr = parts[3]
+                        if ':' in addr:
+                            port = addr.split(':')[-1]
+                            if port.isdigit():
+                                used_ports.add(int(port))
+        except:
+            pass
+        
+        # 添加已知的保留端口
+        used_ports.update(self.reserved_ports)
+        
+        # 添加已经被 iptables 规则使用的端口
+        used_ports.update(int(port) for port in self.rules.keys())
+        
+        return sorted(list(used_ports))
+
+# 创建IPTablesManager实例
+iptables_manager = IPTablesManager()
+
+@app.route('/api/rules', methods=['GET'])
+def get_rules():
+    """获取所有转发规则"""
+    return jsonify(iptables_manager.get_all_rules())
+
+@app.route('/api/rules', methods=['POST'])
+def add_rules():
+    """添加转发规则"""
+    try:
+        data = request.json
+        mode = data.get('mode', 'auto')
+        ip_list = data.get('ip_list', '').strip().split('\n')
+        
+        # 验证输入
+        if not ip_list or not ip_list[0]:
+            return jsonify({'success': False, 'message': '请输入落地IP和端口列表'})
+
+        # 处理端口分配
+        try:
+            if mode == 'specific':
+                port_data = data.get('portData', {})
+                port_type = port_data.get('type')
+                
+                if port_type == 'autoAssign':
+                    start_port_str = port_data.get('startPort')
+                    if start_port_str == '':
+                        return jsonify({'success': False, 'message': '请输入起始端口'})
+                    if start_port_str.isdigit():
+                        current_port = int(start_port_str)
+                    else:
+                        return jsonify({'success': False, 'message': '无效的起始端口'})
+                else:
+                    return jsonify({'success': False, 'message': '无效的端口分配方式'})
+            else:
+                current_port = iptables_manager.default_start_port
+
+            if current_port < 1 or current_port > 65535:
+                return jsonify({'success': False, 'message': '端口号必须在1-65535之间'})
+        except ValueError:
+            return jsonify({'success': False, 'message': '无效的端口号'})
+        
+        # 处理每个IP和端口
+        success = True
+        added_rules = []
+        skipped_ports = []
+        
+        for line in ip_list:
+            line = line.strip()
+            if not line:
+                continue
+                
+            try:
+                if ':' not in line or line.count(':') != 1:
+                    return jsonify({'success': False, 'message': f'无效的格式（需要IP:端口）：{line}'})
+                
+                target_ip, target_port_str = line.split(':')
+                target_port = int(target_port_str)
+                
+                if target_port < 1 or target_port > 65535:
+                    return jsonify({'success': False, 'message': f'目标端口必须在1-65535之间：{line}'})
+                
+                # 如果是自动模式，寻找下一个可用端口
+                if mode == 'auto':
+                    try:
+                        current_port = iptables_manager.find_next_available_port(current_port)
+                    except ValueError:
+                        skipped_ports.append(current_port)
+                        current_port += 1
+                        continue
+                
+                # 检查端口是否已被使用
+                if iptables_manager.is_port_in_use(current_port):
+                    skipped_ports.append(current_port)
+                    current_port += 1
+                    continue
+                
+                # 添加规则
+                if not iptables_manager.add_rule(current_port, target_ip, target_port):
+                    success = False
+                    break
+                
+                added_rules.append({
+                    'local_port': current_port,
+                    'target_ip': target_ip,
+                    'target_port': target_port
+                })
+                
+                current_port += 1
+                
+            except ValueError:
+                return jsonify({'success': False, 'message': f'无效的端口号：{line}'})
+            except Exception as e:
+                return jsonify({'success': False, 'message': f'处理规则时出错：{str(e)}'})
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '添加成功',
+                'added_rules': added_rules,
+                'skipped_ports': skipped_ports
+            })
+        else:
+            # 如果添加失败，回滚已添加的规则
+            for rule in added_rules:
+                iptables_manager.delete_rule(rule['local_port'])
+            return jsonify({'success': False, 'message': '添加规则失败，已回滚所有更改'})
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'系统错误：{str(e)}'})
+
+@app.route('/api/rules/<int:port>', methods=['DELETE'])
+def delete_rule(port):
+    """删除单个转发规则"""
+    success = iptables_manager.delete_rule(port)
+    return jsonify({'success': success})
+
+@app.route('/api/rules/batch', methods=['DELETE'])
+def delete_batch_rules():
+    """批量删除转发规则"""
+    ports = request.json.get('ports', [])
+    success = True
+    deleted_ports = []
+    failed_ports = []
+
+    # 批量删除规则
+    for port in ports:
+        try:
+            port = int(port)
+            if iptables_manager.delete_rule(port):
+                deleted_ports.append(port)
+            else:
+                success = False
+                failed_ports.append(port)
+        except (ValueError, TypeError):
+            success = False
+            failed_ports.append(port)
+
+    return jsonify({
+        'success': success,
+        'deleted_ports': deleted_ports,
+        'failed_ports': failed_ports
+    })
+
+@app.route('/api/ports/used', methods=['GET'])
+def get_used_ports():
+    """获取所有已使用的端口"""
+    return jsonify(iptables_manager.get_system_used_ports())
+
+# 提供静态文件服务
+@app.route('/')
+def index():
+    return app.send_static_file('index.html')
+
+if __name__ == '__main__':
+    # 确保以root权限运行
+    if os.geteuid() != 0:
+        print("Error: This application must be run with root privileges")
+        exit(1)
+    
+    # 确保数据目录存在
+    os.makedirs('/app/data', exist_ok=True)
+    
+    # 启用IP转发
+    try:
+        with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
+            f.write('1')
+    except Exception as e:
+        print(f"Warning: Could not enable IP forwarding: {str(e)}")
+    
+    app.run(host='0.0.0.0', port=888)

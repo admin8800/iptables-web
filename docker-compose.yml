@@ -1,0 +1,9 @@
+services:
+  iptables-web:
+    build: .
+    container_name: iptables-web
+    privileged: true
+    network_mode: host
+    restart: always
+    volumes:
+      - ./data:/app/data

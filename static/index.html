@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>端口转发管理面板</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .container { margin-top: 30px; }
+        .form-group { margin-bottom: 15px; }
+        .search-box { margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>端口转发管理面板</h2>
+        
+        <!-- 添加转发表单 -->
+        <div class="card mt-4">
+            <div class="card-header">
+                添加iptables转发规则（1000-65535）
+            </div>
+            <div class="card-body">
+                <div class="form-group">
+                    <label>转发模式：</label>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="mode" id="modeSpecific" value="specific" checked>
+                        <label class="form-check-label" for="modeSpecific">指定起始端口</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="mode" id="modeAuto" value="auto">
+                        <label class="form-check-label" for="modeAuto">自动分配端口</label>
+                    </div>
+                </div>
+                
+                <div id="portInputSection" class="form-group">
+                    <div class="mb-3">
+                        <label>端口分配方式：</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="portAssignMode" id="portAutoAssign" value="autoAssign" checked>
+                            <label class="form-check-label" for="portAutoAssign">根据起始端口自动分配</label>
+                        </div>
+                    </div>
+                    
+                    <div id="autoAssignInput" class="mb-3">
+                        <label>起始端口：</label>
+                        <input type="number" class="form-control" id="startPort" placeholder="请输入起始端口">
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>落地IP和端口列表：</label>
+                    <textarea class="form-control" id="ipList" rows="5" placeholder="每行一个，格式：IP:端口"></textarea>
+                </div>
+                
+                <button class="btn btn-primary" id="addButton" onclick="addForwarding()">添加转发</button>
+            </div>
+        </div>
+
+        <!-- 转发规则列表 -->
+        <div class="card mt-4">
+            <div class="card-header">
+                转发规则列表
+                <button class="btn btn-danger btn-sm float-end" id="deleteButton" onclick="deleteSelected()">删除选中</button>
+            </div>
+            <div class="card-body">
+                <!-- 搜索框 -->
+                <div class="search-box">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="searchInput" placeholder="搜索端口或IP...">
+                        <button class="btn btn-outline-secondary" type="button" onclick="searchRules()">搜索</button>
+                        <button class="btn btn-outline-secondary" type="button" onclick="clearSearch()">清除</button>
+                    </div>
+                </div>
+
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox" onclick="toggleAll(this)"></th>
+                            <th>本地端口</th>
+                            <th>目标IP</th>
+                            <th>目标端口</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rulesList">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 监听模式切换
+        document.querySelectorAll('input[name="mode"]').forEach(radio => {
+            radio.addEventListener('change', function() {
+                const portInputSection = document.getElementById('portInputSection');
+                portInputSection.style.display = this.value === 'specific' ? 'block' : 'none';
+            });
+        });
+
+        // 监听端口分配方式切换
+        document.querySelectorAll('input[name="portAssignMode"]').forEach(radio => {
+            radio.addEventListener('change', function() {
+                const autoAssignInput = document.getElementById('autoAssignInput');
+                autoAssignInput.style.display = this.value === 'autoAssign' ? 'block' : 'none';
+            });
+        });
+
+        let allRules = []; // 存储所有规则
+
+        // 获取所有规则
+        function loadRules() {
+            fetch('/api/rules')
+                .then(response => response.json())
+                .then(data => {
+                    allRules = data; // 保存所有规则
+                    displayRules(data); // 显示规则
+                });
+        }
+
+        // 显示规则
+        function displayRules(rules) {
+            const tbody = document.getElementById('rulesList');
+            tbody.innerHTML = '';
+            rules.forEach(rule => {
+                tbody.innerHTML += `
+                    <tr>
+                        <td><input type="checkbox" value="${rule.local_port}"></td>
+                        <td>${rule.local_port}</td>
+                        <td>${rule.target_ip}</td>
+                        <td>${rule.target_port}</td>
+                        <td>
+                            <button class="btn btn-danger btn-sm" onclick="deleteRule(${rule.local_port})">删除</button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        // 搜索规则
+        function searchRules() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            if (!searchTerm) {
+                displayRules(allRules);
+                return;
+            }
+
+            const searchTerms = searchTerm.split(',').map(term => term.trim());
+            const filteredRules = allRules.filter(rule => 
+                searchTerms.some(term => 
+                    rule.local_port.toString().includes(term) ||
+                    rule.target_ip.toLowerCase().includes(term) ||
+                    rule.target_port.toString().includes(term)
+                )
+            );
+            
+            displayRules(filteredRules);
+        }
+
+        // 清除搜索
+        function clearSearch() {
+            document.getElementById('searchInput').value = '';
+            displayRules(allRules);
+        }
+
+        // 添加转发规则
+        function addForwarding() {
+            const addButton = document.getElementById('addButton');
+            addButton.disabled = true; // 禁用按钮
+            const mode = document.querySelector('input[name="mode"]:checked').value;
+            let portData = {};
+
+            if (mode === 'specific') {
+                portData.type = 'autoAssign';
+                portData.startPort = document.getElementById('startPort').value;
+            }
+
+            const ipList = document.getElementById('ipList').value;
+            
+            fetch('/api/rules', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    mode: mode,
+                    portData: portData,
+                    ip_list: ipList
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                loadRules();
+                document.getElementById('ipList').value = '';
+                alert(data.success ? '添加成功！' : '添加失败：' + data.message);
+                if (data.skipped_ports && data.skipped_ports.length > 0) {
+                    alert('以下端口已被占用，已自动跳过：' + data.skipped_ports.join(', '));
+                }
+            })
+            .finally(() => {
+                addButton.disabled = false; // 恢复按钮
+            });
+        }
+
+        // 删除单个规则
+        function deleteRule(port) {
+            if (confirm('确定要删除该规则吗？')) {
+                fetch(`/api/rules/${port}`, {
+                    method: 'DELETE'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    loadRules();
+                    alert(data.success ? '删除成功！' : '删除失败：' + data.message);
+                });
+            }
+        }
+
+        // 删除选中的规则
+        function deleteSelected() {
+            const deleteButton = document.getElementById('deleteButton');
+            deleteButton.disabled = true; // 禁用按钮
+            const selected = Array.from(document.querySelectorAll('input[type="checkbox"]:checked'))
+                .map(cb => cb.value)
+                .filter(val => val);
+            
+            if (selected.length === 0) {
+                alert('请选择要删除的规则！');
+                deleteButton.disabled = false; // 恢复按钮
+                return;
+            }
+        
+            if (confirm('确定要删除选中的规则吗？')) {
+                fetch('/api/rules/batch', {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        ports: selected
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    loadRules();
+                    if (data.success) {
+		                alert('批量删除成功！已删除端口：' + data.deleted_ports.join(', '));
+		                if (data.failed_ports.length > 0) {
+		                    alert('未能删除以下端口：' + data.failed_ports.join(', '));
+		                }
+		            } else {
+		                alert('操作完成！');
+		            }
+		        })
+		        .finally(() => {
+		            deleteButton.disabled = false; // 恢复按钮
+		        });
+		    } else {
+		        deleteButton.disabled = false; // 恢复按钮
+		    }
+		}
+
+
+        // 全选/取消全选
+        function toggleAll(checkbox) {
+            const checkboxes = document.querySelectorAll('#rulesList input[type="checkbox"]');
+            checkboxes.forEach(cb => cb.checked = checkbox.checked);
+        }
+
+        // 页面加载完成后获取规则列表
+        document.addEventListener('DOMContentLoaded', loadRules);
+
+        // 添加搜索框的回车事件监听
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchRules();
+            }
+        });
+    </script>
+</body>
+</html>
