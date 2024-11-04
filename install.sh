@@ -1,10 +1,12 @@
 #!/bin/bash
 
+# 更新APT包索引
+sudo apt update
+
 # 检查并安装 curl 和 wget
 for pkg in curl wget; do
     if ! dpkg -l | grep -q "^ii  $pkg"; then
         echo "$pkg 未安装，正在安装..."
-        sudo apt update  # 只有在需要安装软件包时才更新
         sudo apt install -y $pkg
     else
         echo "$pkg 已安装，跳过安装"
