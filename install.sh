@@ -29,7 +29,7 @@ if ! docker ps -q -f name=iptables-web; then
         --network host \
         --restart always \
         -v ./data:/app/data \
-        your-image-name  # 替换为你的镜像名称
+        ghcr.io/admin8800/iptables-web
 else
     echo "iptables-web 容器已启动，跳过启动"
 fi
