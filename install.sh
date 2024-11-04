@@ -21,7 +21,9 @@ else
 fi
 
 # 检查容器是否已启动
-if ! docker ps -q -f name=iptables-web; then
+if docker ps --format '{{.Names}}' | grep -q 'iptables-web'; then
+    echo "iptables-web 容器已启动，跳过启动"
+else
     echo "iptables-web 容器未启动，正在启动..."
     docker run -d \
         --name iptables-web \
@@ -30,6 +32,4 @@ if ! docker ps -q -f name=iptables-web; then
         --restart always \
         -v ./data:/app/data \
         ghcr.io/admin8800/iptables-web
-else
-    echo "iptables-web 容器已启动，跳过启动"
 fi
