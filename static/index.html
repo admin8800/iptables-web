@@ -61,6 +61,7 @@
             <div class="card-header">
                 转发规则列表
                 <button class="btn btn-danger btn-sm float-end" id="deleteButton" onclick="deleteSelected()">删除选中</button>
+                <span class="float-end me-3" id="selectedCount">已选 0 个端口</span>
             </div>
             <div class="card-body">
                 <!-- 搜索框 -->
@@ -108,6 +109,7 @@
         });
 
         let allRules = []; // 存储所有规则
+        let selectedPorts = new Set(); // 存储已选中的端口
 
         // 获取所有规则
         function loadRules() {
@@ -126,7 +128,7 @@
             rules.forEach(rule => {
                 tbody.innerHTML += `
                     <tr>
-                        <td><input type="checkbox" value="${rule.local_port}"></td>
+                        <td><input type="checkbox" value="${rule.local_port}" onclick="updateSelectedCount()"></td>
                         <td>${rule.local_port}</td>
                         <td>${rule.target_ip}</td>
                         <td>${rule.target_port}</td>
@@ -136,6 +138,16 @@
                     </tr>
                 `;
             });
+        }
+
+        // 更新已选端口数量
+        function updateSelectedCount() {
+            selectedPorts.clear(); // 清空已选端口集合
+            const selectedCheckboxes = document.querySelectorAll('#rulesList input[type="checkbox"]:checked');
+            selectedCheckboxes.forEach(checkbox => {
+                selectedPorts.add(checkbox.value); // 将选中的端口添加到集合中
+            });
+            document.getElementById('selectedCount').textContent = `已选 ${selectedPorts.size} 个端口`;
         }
 
         // 搜索规则
@@ -245,27 +257,27 @@
                 .then(data => {
                     loadRules();
                     if (data.success) {
-		                alert('批量删除成功！已删除端口：' + data.deleted_ports.join(', '));
-		                if (data.failed_ports.length > 0) {
-		                    alert('未能删除以下端口：' + data.failed_ports.join(', '));
-		                }
-		            } else {
-		                alert('操作完成！');
-		            }
-		        })
-		        .finally(() => {
-		            deleteButton.disabled = false; // 恢复按钮
-		        });
-		    } else {
-		        deleteButton.disabled = false; // 恢复按钮
-		    }
-		}
-
+                        alert('批量删除成功！已删除端口：' + data.deleted_ports.join(', '));
+                        if (data.failed_ports.length > 0) {
+                            alert('未能删除以下端口：' + data.failed_ports.join(', '));
+                        }
+                    } else {
+                        alert('操作完成！');
+                    }
+                })
+                .finally(() => {
+                    deleteButton.disabled = false; // 恢复按钮
+                });
+            } else {
+                deleteButton.disabled = false; // 恢复按钮
+            }
+        }
 
         // 全选/取消全选
         function toggleAll(checkbox) {
             const checkboxes = document.querySelectorAll('#rulesList input[type="checkbox"]');
             checkboxes.forEach(cb => cb.checked = checkbox.checked);
+            updateSelectedCount(); // 更新已选端口数量
         }
 
         // 页面加载完成后获取规则列表
