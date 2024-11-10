@@ -125,7 +125,11 @@
         function displayRules(rules) {
             const tbody = document.getElementById('rulesList');
             tbody.innerHTML = '';
-            rules.forEach(rule => {
+            
+            // 对规则按照本地端口号从大到小排序
+            const sortedRules = rules.sort((a, b) => b.local_port - a.local_port);
+            
+            sortedRules.forEach(rule => {
                 tbody.innerHTML += `
                     <tr>
                         <td><input type="checkbox" value="${rule.local_port}" onclick="updateSelectedCount()"></td>
@@ -224,7 +228,7 @@
                 .then(response => response.json())
                 .then(data => {
                     loadRules();
-                    alert(data.success ? '删除成功！' : '删除失败：' + data.message);
+                    alert(data.success ? '删除成功��' : '删除失败：' + data.message);
                 });
             }
         }
