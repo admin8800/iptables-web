@@ -23,28 +23,27 @@
                 <div class="form-group">
                     <label>转发模式：</label>
                     <div class="form-check form-check-inline">
-                        <input class="form-check-input" type="radio" name="mode" id="modeSpecific" value="specific" checked>
+                        <input class="form-check-input" type="radio" name="mode" id="modeAuto" value="auto" checked>
+                        <label class="form-check-label" for="modeAuto">自动分配端口</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="mode" id="modeSpecific" value="specific">
                         <label class="form-check-label" for="modeSpecific">指定起始端口</label>
                     </div>
                     <div class="form-check form-check-inline">
-                        <input class="form-check-input" type="radio" name="mode" id="modeAuto" value="auto">
-                        <label class="form-check-label" for="modeAuto">自动分配端口</label>
+                        <input class="form-check-input" type="radio" name="mode" id="modeManual" value="manual">
+                        <label class="form-check-label" for="modeManual">手动指定端口</label>
                     </div>
                 </div>
                 
-                <div id="portInputSection" class="form-group">
-                    <div class="mb-3">
-                        <label>端口分配方式：</label>
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="portAssignMode" id="portAutoAssign" value="autoAssign" checked>
-                            <label class="form-check-label" for="portAutoAssign">根据起始端口自动分配</label>
-                        </div>
-                    </div>
-                    
-                    <div id="autoAssignInput" class="mb-3">
-                        <label>起始端口：</label>
-                        <input type="number" class="form-control" id="startPort" placeholder="请输入起始端口">
-                    </div>
+                <div id="specificPortInput" class="form-group" style="display: none;">
+                    <label for="startPort">起始端口：</label>
+                    <input type="number" class="form-control" id="startPort" placeholder="请输入起始端口">
+                </div>
+                
+                <div id="manualPortInput" class="form-group" style="display: none;">
+                    <label for="specifiedPorts">指定本地端口（多个端口用英文逗号分隔）：</label>
+                    <input type="text" class="form-control" id="specifiedPorts" placeholder="例如: 8001,8002,8003">
                 </div>
                 
                 <div class="form-group">
@@ -95,16 +94,11 @@
         // 监听模式切换
         document.querySelectorAll('input[name="mode"]').forEach(radio => {
             radio.addEventListener('change', function() {
-                const portInputSection = document.getElementById('portInputSection');
-                portInputSection.style.display = this.value === 'specific' ? 'block' : 'none';
-            });
-        });
-
-        // 监听端口分配方式切换
-        document.querySelectorAll('input[name="portAssignMode"]').forEach(radio => {
-            radio.addEventListener('change', function() {
-                const autoAssignInput = document.getElementById('autoAssignInput');
-                autoAssignInput.style.display = this.value === 'autoAssign' ? 'block' : 'none';
+                const specificPortInput = document.getElementById('specificPortInput');
+                const manualPortInput = document.getElementById('manualPortInput');
+                
+                specificPortInput.style.display = this.value === 'specific' ? 'block' : 'none';
+                manualPortInput.style.display = this.value === 'manual' ? 'block' : 'none';
             });
         });
 
@@ -183,16 +177,49 @@
         // 添加转发规则
         function addForwarding() {
             const addButton = document.getElementById('addButton');
-            addButton.disabled = true; // 禁用按钮
+            addButton.disabled = true;
+            
             const mode = document.querySelector('input[name="mode"]:checked').value;
-            let portData = {};
-
-            if (mode === 'specific') {
-                portData.type = 'autoAssign';
-                portData.startPort = document.getElementById('startPort').value;
-            }
-
             const ipList = document.getElementById('ipList').value;
+            let portData = {};
+            
+            if (mode === 'specific') {
+                const startPort = document.getElementById('startPort').value;
+                if (!startPort) {
+                    alert('请输入起始端口！');
+                    addButton.disabled = false;
+                    return;
+                }
+                if (!/^\d+$/.test(startPort) || startPort < 1 || startPort > 65535) {
+                    alert('起始端口格式不正确，请输入1-65535之间的数字！');
+                    addButton.disabled = false;
+                    return;
+                }
+                portData = {
+                    type: 'autoAssign',
+                    startPort: startPort
+                };
+            } else if (mode === 'manual') {
+                const specifiedPorts = document.getElementById('specifiedPorts').value;
+                const ports = specifiedPorts.split(',').map(p => p.trim()).filter(p => p);
+                const rules = ipList.split('\n').filter(rule => rule.trim());
+                
+                if (ports.length !== rules.length) {
+                    alert(`指定端口数量(${ports.length})与规则数量(${rules.length})不匹配！`);
+                    addButton.disabled = false;
+                    return;
+                }
+                
+                if (!ports.every(port => /^\d+$/.test(port) && port >= 1 && port <= 65535)) {
+                    alert('端口格式不正确，请输入1-65535之间的数字！');
+                    addButton.disabled = false;
+                    return;
+                }
+                portData = {
+                    type: 'manual',
+                    ports: ports
+                };
+            }
             
             fetch('/api/rules', {
                 method: 'POST',
@@ -201,21 +228,30 @@
                 },
                 body: JSON.stringify({
                     mode: mode,
-                    portData: portData,
-                    ip_list: ipList
+                    ip_list: ipList,
+                    port_data: portData
                 })
             })
             .then(response => response.json())
             .then(data => {
-                loadRules();
-                document.getElementById('ipList').value = '';
-                alert(data.success ? '添加成功！' : '添加失败：' + data.message);
-                if (data.skipped_ports && data.skipped_ports.length > 0) {
-                    alert('以下端口已被占用，已自动跳过：' + data.skipped_ports.join(', '));
+                if (data.success) {
+                    loadRules();
+                    document.getElementById('ipList').value = '';
+                    if (mode === 'specific') {
+                        document.getElementById('startPort').value = '';
+                    } else if (mode === 'manual') {
+                        document.getElementById('specifiedPorts').value = '';
+                    }
+                    alert('添加成功！');
+                } else {
+                    alert('添加失败：' + data.message);
+                    if (data.occupied_ports && data.occupied_ports.length > 0) {
+                        alert('以下端口已被占用：' + data.occupied_ports.join(', '));
+                    }
                 }
             })
             .finally(() => {
-                addButton.disabled = false; // 恢复按钮
+                addButton.disabled = false;
             });
         }
 

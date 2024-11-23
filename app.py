@@ -220,85 +220,100 @@ def add_rules():
         data = request.json
         mode = data.get('mode', 'auto')
         ip_list = data.get('ip_list', '').strip().split('\n')
+        port_data = data.get('port_data', {})
         
         # 验证输入
         if not ip_list or not ip_list[0]:
             return jsonify({'success': False, 'message': '请输入落地IP和端口列表'})
 
-        # 处理端口分配
-        try:
-            if mode == 'specific':
-                port_data = data.get('portData', {})
-                port_type = port_data.get('type')
+        # 根据不同模式处理端口分配
+        if mode == 'specific':
+            # 指定起始端口自动分配模式
+            start_port = port_data.get('startPort')
+            if not start_port:
+                return jsonify({'success': False, 'message': '请输入起始端口'})
+            try:
+                current_port = int(start_port)
+                if current_port < 1 or current_port > 65535:
+                    return jsonify({'success': False, 'message': '起始端口必须在1-65535之间'})
+            except ValueError:
+                return jsonify({'success': False, 'message': '无效的起始端口'})
+            
+            # 从起始端口开始自动分配
+            current_ports = []
+            for _ in ip_list:
+                try:
+                    port = iptables_manager.find_next_available_port(current_port)
+                    current_ports.append(port)
+                    current_port = port + 1
+                except ValueError:
+                    return jsonify({'success': False, 'message': '无法找到可用端口'})
                 
-                if port_type == 'autoAssign':
-                    start_port_str = port_data.get('startPort')
-                    if start_port_str == '':
-                        return jsonify({'success': False, 'message': '请输入起始端口'})
-                    if start_port_str.isdigit():
-                        current_port = int(start_port_str)
-                    else:
-                        return jsonify({'success': False, 'message': '无效的起始端口'})
-                else:
-                    return jsonify({'success': False, 'message': '无效的端口分配方式'})
-            else:
-                current_port = iptables_manager.default_start_port
+        elif mode == 'manual':
+            # 手动指定端口模式
+            ports = port_data.get('ports', [])
+            if len(ports) != len(ip_list):
+                return jsonify({'success': False, 'message': '指定端口数量与规则数量不匹配'})
+            
+            # 检查端口格式和占用情况
+            occupied_ports = []
+            for port in ports:
+                try:
+                    port_num = int(port)
+                    if port_num < 1 or port_num > 65535:
+                        return jsonify({'success': False, 'message': f'端口 {port} 超出范围(1-65535)'})
+                    if iptables_manager.is_port_in_use(port_num):
+                        occupied_ports.append(port)
+                except ValueError:
+                    return jsonify({'success': False, 'message': f'无效的端口号：{port}'})
+            
+            if occupied_ports:
+                return jsonify({
+                    'success': False,
+                    'message': '部分端口已被占用',
+                    'occupied_ports': occupied_ports
+                })
+            
+            current_ports = [int(p) for p in ports]
+        else:
+            # 完全自动分配模式
+            current_port = iptables_manager.default_start_port
+            current_ports = []
+            for _ in ip_list:
+                try:
+                    port = iptables_manager.find_next_available_port(current_port)
+                    current_ports.append(port)
+                    current_port = port + 1
+                except ValueError:
+                    return jsonify({'success': False, 'message': '无法找到可用端口'})
 
-            if current_port < 1 or current_port > 65535:
-                return jsonify({'success': False, 'message': '端口号必须在1-65535之间'})
-        except ValueError:
-            return jsonify({'success': False, 'message': '无效的端口号'})
-        
-        # 处理每个IP和端口
+        # 添加规则
         success = True
         added_rules = []
-        skipped_ports = []
         
-        for line in ip_list:
+        for i, line in enumerate(ip_list):
             line = line.strip()
             if not line:
                 continue
                 
             try:
-                if ':' not in line or line.count(':') != 1:
+                if ':' not in line:
                     return jsonify({'success': False, 'message': f'无效的格式（需要IP:端口）：{line}'})
                 
                 target_ip, target_port_str = line.split(':')
                 target_port = int(target_port_str)
+                local_port = current_ports[i]
                 
-                if target_port < 1 or target_port > 65535:
-                    return jsonify({'success': False, 'message': f'目标端口必须在1-65535之间：{line}'})
-                
-                # 如果是自动模式，寻找下一个可用端口
-                if mode == 'auto':
-                    try:
-                        current_port = iptables_manager.find_next_available_port(current_port)
-                    except ValueError:
-                        skipped_ports.append(current_port)
-                        current_port += 1
-                        continue
-                
-                # 检查端口是否已被使用
-                if iptables_manager.is_port_in_use(current_port):
-                    skipped_ports.append(current_port)
-                    current_port += 1
-                    continue
-                
-                # 添加规则
-                if not iptables_manager.add_rule(current_port, target_ip, target_port):
+                if not iptables_manager.add_rule(local_port, target_ip, target_port):
                     success = False
                     break
                 
                 added_rules.append({
-                    'local_port': current_port,
+                    'local_port': local_port,
                     'target_ip': target_ip,
                     'target_port': target_port
                 })
                 
-                current_port += 1
-                
-            except ValueError:
-                return jsonify({'success': False, 'message': f'无效的端口号：{line}'})
             except Exception as e:
                 return jsonify({'success': False, 'message': f'处理规则时出错：{str(e)}'})
         
@@ -306,8 +321,7 @@ def add_rules():
             return jsonify({
                 'success': True,
                 'message': '添加成功',
-                'added_rules': added_rules,
-                'skipped_ports': skipped_ports
+                'added_rules': added_rules
             })
         else:
             # 如果添加失败，回滚已添加的规则
