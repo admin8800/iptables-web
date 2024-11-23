@@ -23,11 +23,11 @@
                 <div class="form-group">
                     <label>转发模式：</label>
                     <div class="form-check form-check-inline">
-                        <input class="form-check-input" type="radio" name="mode" id="modeAuto" value="auto" checked>
+                        <input class="form-check-input" type="radio" name="mode" id="modeAuto" value="auto">
                         <label class="form-check-label" for="modeAuto">自动分配端口</label>
                     </div>
                     <div class="form-check form-check-inline">
-                        <input class="form-check-input" type="radio" name="mode" id="modeSpecific" value="specific">
+                        <input class="form-check-input" type="radio" name="mode" id="modeSpecific" value="specific" checked>
                         <label class="form-check-label" for="modeSpecific">指定起始端口</label>
                     </div>
                     <div class="form-check form-check-inline">
@@ -36,7 +36,7 @@
                     </div>
                 </div>
                 
-                <div id="specificPortInput" class="form-group" style="display: none;">
+                <div id="specificPortInput" class="form-group">
                     <label for="startPort">起始端口：</label>
                     <input type="number" class="form-control" id="startPort" placeholder="请输入起始端口">
                 </div>
