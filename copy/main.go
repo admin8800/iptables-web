@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"flag"
 	"fmt"
 	"io"
@@ -132,37 +131,27 @@ func initSSHConnection(host, password string) {
 }
 
 func monitorRules() {
-	// 使用轮询方式检查规则变更
-	ticker := time.NewTicker(10 * time.Second)
+	// 使用轮询方式每隔60秒钟检查规则，并发送到目标主机
+	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
-	var lastRulesHash string
-
 	for range ticker.C {
+		// 获取当前iptables规则
 		rules, err := getFormattedRules()
 		if err != nil {
 			log.Printf("获取规则失败: %v", err)
 			continue
 		}
 
-		currentHash := hashRules(rules)
-		if currentHash != lastRulesHash {
-			lastRulesHash = currentHash
-			log.Println("检测到iptables规则变更")
-			if err := sendRulesToRemote(rules); err != nil {
-				log.Printf("发送规则到远程失败: %v", err)
-			}
+		// 直接发送完整的规则到远程主机
+		if err := sendRulesToRemote(rules); err != nil {
+			log.Printf("发送规则到远程失败: %v", err)
 		}
 	}
 }
 
-func hashRules(data []byte) string {
-	hash := sha256.Sum256(data)
-	return fmt.Sprintf("%x", hash)
-}
-
 func getFormattedRules() ([]byte, error) {
-	cmd := exec.Command("iptables", "-t", "nat", "-L", "PREROUTING", "-n", "-v")
+	cmd := exec.Command("iptables", "-t", "nat", "-L", "PREROUTING", "-v", "-n")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -170,7 +159,7 @@ func getFormattedRules() ([]byte, error) {
 	}
 
 	var formatted bytes.Buffer
-	formatted.WriteString("机器端口\t\t目标IP和端口\n")
+	formatted.WriteString("中转机—>\t\t目标IP和端口\n")
 
 	lines := strings.Split(out.String(), "\n")
 	for _, line := range lines {
@@ -178,10 +167,9 @@ func getFormattedRules() ([]byte, error) {
 			continue
 		}
 
-		localPort := extractField(line, "dpt:")
 		target := extractField(line, "to:")
-		if localPort != "" && target != "" {
-			formatted.WriteString(fmt.Sprintf("%s\t\t%s\n", localPort, target))
+		if target != "" {
+			formatted.WriteString(fmt.Sprintf("%s\t\t%s\n", publicIP, target))
 		}
 	}
 
