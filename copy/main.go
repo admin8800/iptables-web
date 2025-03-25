@@ -2,10 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"flag"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,8 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -32,12 +31,18 @@ var (
 )
 
 func main() {
-	// 验证环境变量
-	remoteHost := os.Getenv("IPTABLES_REMOTE_HOST")
-	remotePassword := os.Getenv("IPTABLES_REMOTE_PASSWORD")
+	// 定义命令行参数
+	var remoteHost, remotePassword string
+	flag.StringVar(&remoteHost, "host", "", "远程主机地址 (必须)")
+	flag.StringVar(&remotePassword, "password", "", "远程主机密码 (必须)")
+	flag.Parse()
 
 	if remoteHost == "" || remotePassword == "" {
-		log.Fatal("必须设置 IPTABLES_REMOTE_HOST 和 IPTABLES_REMOTE_PASSWORD 环境变量")
+		fmt.Println("错误：必须指定主机地址和密码")
+		fmt.Println("用法示例：")
+		fmt.Println("  sudo ./iptables-copy -host 192.168.1.100 -password yourpassword")
+		flag.PrintDefaults()
+		os.Exit(1)
 	}
 
 	// 获取公网IP
@@ -55,8 +60,8 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 启动Netlink监听
-	go startNetlinkListener()
+	// 启动规则变更监听
+	go monitorRules()
 
 	// 主循环
 	for {
@@ -69,7 +74,7 @@ func main() {
 			return
 		case <-reconnectCh:
 			log.Println("尝试重新连接SSH...")
-			time.Sleep(5 * time.Second) // 等待5秒后重试
+			time.Sleep(5 * time.Second)
 			initSSHConnection(remoteHost, remotePassword)
 		}
 	}
@@ -100,7 +105,7 @@ func initSSHConnection(host, password string) {
 		Auth: []ssh.AuthMethod{
 			ssh.Password(password),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 禁用主机密钥检查
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         30 * time.Second,
 	}
 
@@ -126,83 +131,42 @@ func initSSHConnection(host, password string) {
 	reconnectCh <- true
 }
 
-func startNetlinkListener() {
-	for {
-		conn := newNetlinkConn()
-		log.Println("开始监听iptables规则变更...")
+func monitorRules() {
+	// 使用轮询方式检查规则变更
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 
-		if err := subscribeNetfilterEvents(conn); err != nil {
-			log.Printf("订阅Netfilter事件失败: %v", err)
-			conn.Close()
-			time.Sleep(5 * time.Second)
+	var lastRulesHash string
+
+	for range ticker.C {
+		rules, err := getFormattedRules()
+		if err != nil {
+			log.Printf("获取规则失败: %v", err)
 			continue
 		}
 
-		for {
-			msgs, err := conn.Receive()
-			if err != nil {
-				log.Printf("接收Netlink消息错误: %v", err)
-				break
-			}
-
-			for _, msg := range msgs {
-				if msg.Header.Type == nl.NLMSG_ERROR {
-					log.Printf("Netlink错误消息: %v", msg)
-					continue
-				}
-
-				if isRulesChangeEvent(msg) {
-					log.Println("检测到iptables规则变更")
-					if err := handleRulesChange(); err != nil {
-						log.Printf("处理规则变更失败: %v", err)
-					}
-				}
+		currentHash := hashRules(rules)
+		if currentHash != lastRulesHash {
+			lastRulesHash = currentHash
+			log.Println("检测到iptables规则变更")
+			if err := sendRulesToRemote(rules); err != nil {
+				log.Printf("发送规则到远程失败: %v", err)
 			}
 		}
-
-		conn.Close()
-		time.Sleep(5 * time.Second)
 	}
 }
 
-func newNetlinkConn() *nl.NetlinkSocket {
-	conn, err := nl.Subscribe(syscall.NETLINK_NETFILTER)
-	if err != nil {
-		log.Fatalf("创建Netlink连接失败: %v", err)
-	}
-	return conn
-}
-
-func subscribeNetfilterEvents(conn *nl.NetlinkSocket) error {
-	req := nl.NewNetlinkRequest(nl.NFNL_SUBSYS_IPTABLES<<8|nl.IPTM_MSG_GET, nl.NLM_F_DUMP)
-	_, err := conn.Execute(req)
-	return err
-}
-
-func isRulesChangeEvent(msg *nl.NetlinkMessage) bool {
-	return msg.Header.Type&0xFF == nl.IPTM_MSG_NEW ||
-		msg.Header.Type&0xFF == nl.IPTM_MSG_DEL
-}
-
-func handleRulesChange() error {
-	rules, err := getFormattedRules()
-	if err != nil {
-		return fmt.Errorf("获取规则失败: %v", err)
-	}
-
-	if err := sendRulesToRemote(rules); err != nil {
-		return fmt.Errorf("发送规则到远程失败: %v", err)
-	}
-
-	return nil
+func hashRules(data []byte) string {
+	hash := sha256.Sum256(data)
+	return fmt.Sprintf("%x", hash)
 }
 
 func getFormattedRules() ([]byte, error) {
-	cmd := exec.Command("sudo", "iptables", "-t", "nat", "-L", "PREROUTING", "-n", "-v")
+	cmd := exec.Command("iptables", "-t", "nat", "-L", "PREROUTING", "-n", "-v")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("执行iptables命令失败: %v", err)
 	}
 
 	var formatted bytes.Buffer
@@ -242,7 +206,6 @@ func sendRulesToRemote(rules []byte) error {
 		return fmt.Errorf("SSH连接未建立")
 	}
 
-	// 生成带公网IP的文件名
 	remoteFilePath := fmt.Sprintf(ConfigPath, publicIP)
 
 	session, err := sshClient.NewSession()
@@ -252,37 +215,28 @@ func sendRulesToRemote(rules []byte) error {
 	}
 	defer session.Close()
 
-	go func() {
-		stdin, err := session.StdinPipe()
-		if err != nil {
-			log.Printf("获取标准输入管道失败: %v", err)
-			return
-		}
-		defer stdin.Close()
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("获取标准输入管道失败: %v", err)
+	}
 
-		cmd := fmt.Sprintf("cat > %s", remoteFilePath)
-		if err := session.Start(cmd); err != nil {
-			log.Printf("启动远程命令失败: %v", err)
-			reconnectCh <- true
-			return
-		}
+	if err := session.Start(fmt.Sprintf("cat > %s", remoteFilePath)); err != nil {
+		return fmt.Errorf("启动远程命令失败: %v", err)
+	}
 
-		if _, err := io.Copy(stdin, bytes.NewReader(rules)); err != nil {
-			log.Printf("写入规则数据失败: %v", err)
-			return
-		}
+	if _, err := io.Copy(stdin, bytes.NewReader(rules)); err != nil {
+		return fmt.Errorf("写入规则数据失败: %v", err)
+	}
 
-		if err := stdin.Close(); err != nil {
-			log.Printf("关闭管道失败: %v", err)
-		}
+	if err := stdin.Close(); err != nil {
+		return fmt.Errorf("关闭管道失败: %v", err)
+	}
 
-		if err := session.Wait(); err != nil {
-			log.Printf("远程命令执行失败: %v", err)
-			reconnectCh <- true
-		} else {
-			log.Printf("规则已成功保存到远程: %s", remoteFilePath)
-		}
-	}()
+	if err := session.Wait(); err != nil {
+		reconnectCh <- true
+		return fmt.Errorf("远程命令执行失败: %v", err)
+	}
 
+	log.Printf("规则已成功保存到远程: %s", remoteFilePath)
 	return nil
 }
