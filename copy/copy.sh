@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# 默认值
 HOST=""
 PASSWORD=""
 SERVICE_FILE="/etc/systemd/system/iptables-copy.service"
@@ -20,13 +19,22 @@ if [[ -z "$HOST" || -z "$PASSWORD" ]]; then
     exit 1
 fi
 
-# 下载iptables-copy文件
-echo "下载 iptables-copy 脚本..."
-wget -qO /usr/local/bin/iptables-copy https://github.com/admin8800/iptables-web/raw/main/copy/iptables-copy
+if [ -f /usr/local/bin/iptables-copy ]; then
+    echo "/usr/local/bin/iptables-copy 已存在，正在删除旧文件..."
+    rm -f /usr/local/bin/iptables-copy
+fi
+
+
+curl -fsSL https://github.com/admin8800/iptables-web/raw/main/copy/iptables-copy -o /usr/local/bin/iptables-copy
 chmod +x /usr/local/bin/iptables-copy
 
-# 创建 systemd 服务文件
-echo "创建 systemd 服务文件..."
+if [ -f "$SERVICE_FILE" ]; then
+    echo "$SERVICE_FILE 文件已存在，正在覆盖..."
+    rm -f "$SERVICE_FILE"
+fi
+
+# 创建或覆盖 systemd 服务文件
+echo "创建或覆盖 systemd 服务文件..."
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Iptables Copy Service
@@ -48,5 +56,4 @@ systemctl daemon-reload
 systemctl enable iptables-copy.service
 systemctl start iptables-copy.service
 
-# 输出脚本配置
-echo "iptables-copy 服务已安装并启用，服务将随着系统启动而自动运行。"
+echo "iptables-copy 服务已安装并启用。"
