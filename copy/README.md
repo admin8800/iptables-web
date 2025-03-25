@@ -1,6 +1,6 @@
 ### 运行
 ```
-bash <(curl -sL https://cdn.jsdelivr.net/gh/admin8800/iptables-web@raw/main/copy/copy.sh) -host "主机地址" -password "密码"
+bash <(curl -sL https://cdn.jsdelivr.net/gh/admin8800/iptables-web@main/copy/copy.sh) -host "主机地址" -password "密码"
 ```
 
 查看状态
