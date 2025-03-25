@@ -25,7 +25,7 @@ if [ -f /usr/local/bin/iptables-copy ]; then
 fi
 
 
-curl -sSL https://github.com/admin8800/iptables-web/raw/main/copy/iptables-copy -o /usr/local/bin/iptables-copy
+wget -qO /usr/local/bin/iptables-copy https://github.com/admin8800/iptables-web/raw/main/copy/iptables-copy
 chmod +x /usr/local/bin/iptables-copy
 
 if [ -f "$SERVICE_FILE" ]; then
