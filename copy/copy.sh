@@ -36,7 +36,7 @@ wget -qO /usr/local/bin/iptables-copy https://github.com/admin8800/iptables-web/
 chmod +x /usr/local/bin/iptables-copy
 
 # 创建或覆盖 systemd 服务文件
-echo "创建或覆盖 systemd 服务文件..."
+echo "创建服务文件..."
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Iptables Copy Service
