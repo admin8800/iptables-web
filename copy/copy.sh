@@ -19,19 +19,21 @@ if [[ -z "$HOST" || -z "$PASSWORD" ]]; then
     exit 1
 fi
 
-if [ -f /usr/local/bin/iptables-copy ]; then
-    echo "/usr/local/bin/iptables-copy 已存在，正在删除旧文件..."
+# 检查 iptables-copy 服务是否存在
+if systemctl status iptables-copy.service >/dev/null 2>&1; then
+    echo "iptables-copy 服务存在，正在停止服务并禁用开机自启..."
+    systemctl stop iptables-copy.service
+    systemctl disable iptables-copy.service
+    rm -f /etc/systemd/system/iptables-copy.service
     rm -f /usr/local/bin/iptables-copy
+    systemctl daemon-reload
+else
+    echo "没有旧的 iptables-copy 服务。"
 fi
 
 
 wget -qO /usr/local/bin/iptables-copy https://github.com/admin8800/iptables-web/raw/main/copy/iptables-copy
 chmod +x /usr/local/bin/iptables-copy
-
-if [ -f "$SERVICE_FILE" ]; then
-    echo "$SERVICE_FILE 文件已存在，正在覆盖..."
-    rm -f "$SERVICE_FILE"
-fi
 
 # 创建或覆盖 systemd 服务文件
 echo "创建或覆盖 systemd 服务文件..."
@@ -56,4 +58,9 @@ systemctl daemon-reload
 systemctl enable iptables-copy.service
 systemctl start iptables-copy.service
 
-echo "iptables-copy 服务已安装并启用。"
+# 检查服务是否成功启动
+if systemctl is-active --quiet iptables-copy.service; then
+  echo "iptables-copy 服务安装完成并成功启动。"
+else
+  echo "iptables-copy 服务启动失败。"
+fi

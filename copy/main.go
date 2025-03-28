@@ -99,6 +99,20 @@ func initSSHConnection(host, password string) {
 		sshClient.Close()
 	}
 
+    // 检查旧的已知主机条目是否存在
+    checkCmd := exec.Command("ssh-keygen", "-F", host)
+    if err := checkCmd.Run(); err == nil {
+        // 清除旧的已知主机条目
+        cmd := exec.Command("ssh-keygen", "-R", host)
+        if err := cmd.Run(); err != nil {
+            log.Printf("清除旧的已知主机缓存失败: %v", err)
+        } else {
+            log.Printf("成功清除旧的已知主机缓存: %s", host)
+        }
+    } else {
+        log.Printf("没有检测到旧的主机缓存: %s", host)
+    }
+
 	sshConfig := &ssh.ClientConfig{
 		User: SSHUser,
 		Auth: []ssh.AuthMethod{
