@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -20,7 +21,7 @@ import (
 const (
 	SSHUser    = "root"
 	SSHPort    = 22
-	ConfigPath = "/home/port_%s.txt"
+	ConfigPath = "/home/%s.json"
 )
 
 var (
@@ -30,7 +31,6 @@ var (
 )
 
 func main() {
-	// 定义命令行参数
 	var remoteHost, remotePassword string
 	flag.StringVar(&remoteHost, "host", "", "远程主机地址 (必须)")
 	flag.StringVar(&remotePassword, "password", "", "远程主机密码 (必须)")
@@ -39,12 +39,11 @@ func main() {
 	if remoteHost == "" || remotePassword == "" {
 		fmt.Println("错误：必须指定主机地址和密码")
 		fmt.Println("用法示例：")
-		fmt.Println("  sudo ./iptables-copy -host 192.168.1.100 -password yourpassword")
+		fmt.Println("iptables-copy -host 192.168.1.100 -password yourpassword")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	// 获取公网IP
 	var err error
 	publicIP, err = getPublicIP()
 	if err != nil {
@@ -52,17 +51,13 @@ func main() {
 	}
 	log.Printf("当前公网IP: %s", publicIP)
 
-	// 初始化SSH连接
 	initSSHConnection(remoteHost, remotePassword)
 
-	// 设置信号处理
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 启动规则变更监听
-	go monitorRules()
+	go monitorFileSync()
 
-	// 主循环
 	for {
 		select {
 		case <-sigChan:
@@ -99,19 +94,17 @@ func initSSHConnection(host, password string) {
 		sshClient.Close()
 	}
 
-    // 检查旧的已知主机条目是否存在
-    checkCmd := exec.Command("ssh-keygen", "-F", host)
-    if err := checkCmd.Run(); err == nil {
-        // 清除旧的已知主机条目
-        cmd := exec.Command("ssh-keygen", "-R", host)
-        if err := cmd.Run(); err != nil {
-            log.Printf("清除旧的已知主机缓存失败: %v", err)
-        } else {
-            log.Printf("成功清除旧的已知主机缓存: %s", host)
-        }
-    } else {
-        log.Printf("没有检测到旧的主机缓存: %s", host)
-    }
+	checkCmd := exec.Command("ssh-keygen", "-F", host)
+	if err := checkCmd.Run(); err == nil {
+		cmd := exec.Command("ssh-keygen", "-R", host)
+		if err := cmd.Run(); err != nil {
+			log.Printf("清除旧的已知主机缓存失败: %v", err)
+		} else {
+			log.Printf("成功清除旧的已知主机缓存: %s", host)
+		}
+	} else {
+		log.Printf("没有检测到旧的主机缓存: %s", host)
+	}
 
 	sshConfig := &ssh.ClientConfig{
 		User: SSHUser,
@@ -144,66 +137,48 @@ func initSSHConnection(host, password string) {
 	reconnectCh <- true
 }
 
-func monitorRules() {
-	// 使用轮询方式每隔60秒钟检查规则，并发送到目标主机
+func monitorFileSync() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
+	sourceFile := "/root/data/iptables_rules.json"
+
 	for range ticker.C {
-		// 获取当前iptables规则
-		rules, err := getFormattedRules()
+		data, err := os.ReadFile(sourceFile)
 		if err != nil {
-			log.Printf("获取规则失败: %v", err)
+			log.Printf("读取本地文件失败: %v", err)
 			continue
 		}
 
-		// 直接发送完整的规则到远程主机
-		if err := sendRulesToRemote(rules); err != nil {
-			log.Printf("发送规则到远程失败: %v", err)
-		}
-	}
-}
-
-func getFormattedRules() ([]byte, error) {
-	cmd := exec.Command("iptables", "-t", "nat", "-L", "PREROUTING", "-v", "-n")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("执行iptables命令失败: %v", err)
-	}
-
-	var formatted bytes.Buffer
-	formatted.WriteString("中转机—>\t\t目标IP和端口\n")
-
-	lines := strings.Split(out.String(), "\n")
-	for _, line := range lines {
-		if !strings.Contains(line, "DNAT") {
+		// 修改JSON中的"local_port"键名为公网IP
+		modifiedData, err := replaceLocalPortKey(data, publicIP)
+		if err != nil {
+			log.Printf("修改JSON键名失败: %v", err)
 			continue
 		}
 
-		target := extractField(line, "to:")
-		if target != "" {
-			formatted.WriteString(fmt.Sprintf("%s\t\t%s\n", publicIP, target))
+		if err := sendFileToRemote(modifiedData); err != nil {
+			log.Printf("发送文件到远程失败: %v", err)
 		}
 	}
-
-	return formatted.Bytes(), nil
 }
 
-func extractField(line, prefix string) string {
-	start := strings.Index(line, prefix)
-	if start == -1 {
-		return ""
+// 将JSON中的"local_port"替换为本机公网IP
+func replaceLocalPortKey(data []byte, publicIP string) ([]byte, error) {
+	// 使用字符串替换方式处理JSON保留原本结构
+	jsonStr := string(data)
+	modifiedStr := strings.ReplaceAll(jsonStr, `"local_port"`, fmt.Sprintf(`"%s"`, publicIP))
+	
+	// 验证修改后的JSON是否有效
+	var js map[string]interface{}
+	if err := json.Unmarshal([]byte(modifiedStr), &js); err != nil {
+		return nil, fmt.Errorf("修改后的JSON验证失败: %v", err)
 	}
-	start += len(prefix)
-	end := strings.IndexAny(line[start:], " \t\n")
-	if end == -1 {
-		return line[start:]
-	}
-	return line[start : start+end]
+
+	return []byte(modifiedStr), nil
 }
 
-func sendRulesToRemote(rules []byte) error {
+func sendFileToRemote(fileData []byte) error {
 	if sshClient == nil {
 		return fmt.Errorf("SSH连接未建立")
 	}
@@ -226,8 +201,8 @@ func sendRulesToRemote(rules []byte) error {
 		return fmt.Errorf("启动远程命令失败: %v", err)
 	}
 
-	if _, err := io.Copy(stdin, bytes.NewReader(rules)); err != nil {
-		return fmt.Errorf("写入规则数据失败: %v", err)
+	if _, err := io.Copy(stdin, bytes.NewReader(fileData)); err != nil {
+		return fmt.Errorf("写入文件数据失败: %v", err)
 	}
 
 	if err := stdin.Close(); err != nil {
@@ -239,6 +214,6 @@ func sendRulesToRemote(rules []byte) error {
 		return fmt.Errorf("远程命令执行失败: %v", err)
 	}
 
-	log.Printf("规则已成功保存到远程: %s", remoteFilePath)
+	log.Printf("文件已成功保存到远程: %s", remoteFilePath)
 	return nil
 }
