@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,7 +20,7 @@ import (
 const (
 	SSHUser    = "root"
 	SSHPort    = 22
-	ConfigPath = "/home/%s.json"
+	ConfigPath = "/home/%s.txt" // 使用.txt扩展名
 )
 
 var (
@@ -38,8 +37,6 @@ func main() {
 
 	if remoteHost == "" || remotePassword == "" {
 		fmt.Println("错误：必须指定主机地址和密码")
-		fmt.Println("用法示例：")
-		fmt.Println("iptables-copy -host 192.168.1.100 -password yourpassword")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -68,7 +65,7 @@ func main() {
 			return
 		case <-reconnectCh:
 			log.Println("尝试重新连接SSH...")
-			time.Sleep(5 * time.Second)
+			time.Sleep(120 * time.Second)
 			initSSHConnection(remoteHost, remotePassword)
 		}
 	}
@@ -99,11 +96,7 @@ func initSSHConnection(host, password string) {
 		cmd := exec.Command("ssh-keygen", "-R", host)
 		if err := cmd.Run(); err != nil {
 			log.Printf("清除旧的已知主机缓存失败: %v", err)
-		} else {
-			log.Printf("成功清除旧的已知主机缓存: %s", host)
 		}
-	} else {
-		log.Printf("没有检测到旧的主机缓存: %s", host)
 	}
 
 	sshConfig := &ssh.ClientConfig{
@@ -117,7 +110,7 @@ func initSSHConnection(host, password string) {
 
 	var err error
 	var retries int
-	maxRetries := 5
+	maxRetries := 60
 
 	for retries < maxRetries {
 		sshClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, SSHPort), sshConfig)
@@ -128,9 +121,7 @@ func initSSHConnection(host, password string) {
 
 		retries++
 		log.Printf("SSH连接失败(尝试 %d/%d): %v", retries, maxRetries, err)
-		if retries < maxRetries {
-			time.Sleep(5 * time.Second)
-		}
+		time.Sleep(120 * time.Second)
 	}
 
 	log.Printf("SSH连接失败，达到最大重试次数 %d", maxRetries)
@@ -150,40 +141,46 @@ func monitorFileSync() {
 			continue
 		}
 
-		// 修改JSON中的"local_port"键名为公网IP
-		modifiedData, err := replaceLocalPortKey(data, publicIP)
+		formattedText, err := convertToTargetFormat(data)
 		if err != nil {
-			log.Printf("修改JSON键名失败: %v", err)
+			log.Printf("格式转换失败: %v", err)
 			continue
 		}
 
-		if err := sendFileToRemote(modifiedData); err != nil {
+		if err := sendFileToRemote(formattedText); err != nil {
 			log.Printf("发送文件到远程失败: %v", err)
 		}
 	}
 }
 
-// 将JSON中的"local_port"替换为本机公网IP
-func replaceLocalPortKey(data []byte, publicIP string) ([]byte, error) {
-	// 使用字符串替换方式处理JSON保留原本结构
-	jsonStr := string(data)
-	modifiedStr := strings.ReplaceAll(jsonStr, `"local_port"`, fmt.Sprintf(`"%s"`, publicIP))
-	
-	// 验证修改后的JSON是否有效
-	var js map[string]interface{}
-	if err := json.Unmarshal([]byte(modifiedStr), &js); err != nil {
-		return nil, fmt.Errorf("修改后的JSON验证失败: %v", err)
+func convertToTargetFormat(data []byte) (string, error) {
+	var rules map[string]map[string]interface{}
+	if err := json.Unmarshal(data, &rules); err != nil {
+		return "", fmt.Errorf("解析JSON失败: %v", err)
 	}
 
-	return []byte(modifiedStr), nil
+	var builder strings.Builder
+
+	for _, rule := range rules {
+		localPort, lok := rule["local_port"].(float64)
+		targetIP, tok := rule["target_ip"].(string)
+		targetPort, pok := rule["target_port"].(float64)
+
+		if lok && tok && pok {
+			line := fmt.Sprintf("%-5d\t\t%s:%-5d\n", 
+				int(localPort),
+				targetIP, int(targetPort))
+			builder.WriteString(line)
+		}
+	}
+
+	return builder.String(), nil
 }
 
-func sendFileToRemote(fileData []byte) error {
+func sendFileToRemote(content string) error {
 	if sshClient == nil {
 		return fmt.Errorf("SSH连接未建立")
 	}
-
-	remoteFilePath := fmt.Sprintf(ConfigPath, publicIP)
 
 	session, err := sshClient.NewSession()
 	if err != nil {
@@ -192,26 +189,12 @@ func sendFileToRemote(fileData []byte) error {
 	}
 	defer session.Close()
 
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("获取标准输入管道失败: %v", err)
-	}
+	remoteFilePath := fmt.Sprintf(ConfigPath, publicIP)
+	cmd := fmt.Sprintf("echo '%s' > %s", strings.ReplaceAll(content, "'", "'\\''"), remoteFilePath)
 
-	if err := session.Start(fmt.Sprintf("cat > %s", remoteFilePath)); err != nil {
-		return fmt.Errorf("启动远程命令失败: %v", err)
-	}
-
-	if _, err := io.Copy(stdin, bytes.NewReader(fileData)); err != nil {
-		return fmt.Errorf("写入文件数据失败: %v", err)
-	}
-
-	if err := stdin.Close(); err != nil {
-		return fmt.Errorf("关闭管道失败: %v", err)
-	}
-
-	if err := session.Wait(); err != nil {
+	if err := session.Run(cmd); err != nil {
 		reconnectCh <- true
-		return fmt.Errorf("远程命令执行失败: %v", err)
+		return fmt.Errorf("执行远程命令失败: %v", err)
 	}
 
 	log.Printf("文件已成功保存到远程: %s", remoteFilePath)
