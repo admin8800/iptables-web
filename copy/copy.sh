@@ -32,7 +32,27 @@ else
 fi
 
 
-wget -qO /usr/local/bin/iptables-copy https://github.com/admin8800/iptables-web/raw/main/copy/iptables-copy
+# 获取系统架构
+ARCH=$(dpkg --print-architecture)
+
+# 根据架构选择对应的二进制文件
+case "$ARCH" in
+    amd64)
+        BINARY_URL="https://github.com/admin8800/iptables-web/raw/main/copy/iptables-copy-amd64"
+        echo "检测到 amd64 架构，下载对应版本..."
+        ;;
+    arm64)
+        BINARY_URL="https://github.com/admin8800/iptables-web/raw/main/copy/iptables-copy-arm64"
+        echo "检测到 arm64 架构，下载对应版本..."
+        ;;
+    *)
+        echo "错误：不支持的架构和系统 $ARCH"
+        exit 1
+        ;;
+esac
+
+# 下载对应架构的二进制文件
+wget -qO /usr/local/bin/iptables-copy "$BINARY_URL"
 chmod +x /usr/local/bin/iptables-copy
 
 # 创建或覆盖 systemd 服务文件
