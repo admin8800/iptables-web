@@ -1,3 +1,3 @@
 ```
-wget --no-check-certificate https://github.com/admin8800/iptables-web/raw/main/install.sh && chmod +x install.sh && ./install.sh
+wget --no-check-certificate https://github.com/admin8800/iptables-web/raw/main/install.sh && chmod +x install.sh && ./install.sh "面板密码"
 ```

@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# 支持命令行参数指定密码
+if [ ! -z "$1" ]; then
+    AUTH_TOKEN="$1"
+fi
+
 # 检查并安装 curl 和 wget
 for pkg in curl wget; do
     if ! dpkg -l | grep -q "^ii  $pkg"; then
