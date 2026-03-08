@@ -5,5 +5,7 @@ services:
     privileged: true
     network_mode: host
     restart: always
+    environment:
+      - AUTH_TOKEN=admin123 # 请修改此密码
     volumes:
       - ./data:/app/data

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>登录 - 端口转发管理面板</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f5f5f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .login-card {
+            width: 100%;
+            max-width: 400px;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card login-card shadow-sm">
+        <div class="card-body">
+            <h4 class="card-title text-center mb-4">管理面板登录</h4>
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="mb-3">
+                    <label for="password" class="form-label">密码</label>
+                    <input type="password" class="form-control" id="password" required autofocus placeholder="请输入访问密码">
+                </div>
+                <div id="errorAlert" class="alert alert-danger d-none" role="alert">
+                    密码错误
+                </div>
+                <div class="d-grid gap-2">
+                    <button type="submit" class="btn btn-primary">登录</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        async function handleLogin(event) {
+            event.preventDefault();
+            const password = document.getElementById('password').value;
+            const errorAlert = document.getElementById('errorAlert');
+            
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ password: password })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    window.location.href = '/';
+                } else {
+                    errorAlert.textContent = data.message || '登录失败';
+                    errorAlert.classList.remove('d-none');
+                }
+            } catch (error) {
+                errorAlert.textContent = '系统错误，请重试';
+                errorAlert.classList.remove('d-none');
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,11 +1,36 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session, redirect
 import subprocess
 import os
 import socket
 import json
 from contextlib import closing
+from functools import wraps
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24))
+AUTH_TOKEN = os.environ.get('AUTH_TOKEN')
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not AUTH_TOKEN:
+            return f(*args, **kwargs)
+            
+        # 1. Check API Header
+        api_token = request.headers.get('X-API-Token') or request.headers.get('Authorization')
+        if api_token == AUTH_TOKEN:
+            return f(*args, **kwargs)
+
+        # 2. Check Session
+        if session.get('logged_in'):
+            return f(*args, **kwargs)
+
+        # 3. Fail
+        if request.path.startswith('/api/'):
+            return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+            
+        return redirect('/login')
+    return decorated_function
 
 class IPTablesManager:
     def __init__(self):
@@ -209,11 +234,13 @@ class IPTablesManager:
 iptables_manager = IPTablesManager()
 
 @app.route('/api/rules', methods=['GET'])
+@login_required
 def get_rules():
     """获取所有转发规则"""
     return jsonify(iptables_manager.get_all_rules())
 
 @app.route('/api/rules', methods=['POST'])
+@login_required
 def add_rules():
     """添加转发规则"""
     try:
@@ -333,12 +360,14 @@ def add_rules():
         return jsonify({'success': False, 'message': f'系统错误：{str(e)}'})
 
 @app.route('/api/rules/<int:port>', methods=['DELETE'])
+@login_required
 def delete_rule(port):
     """删除单个转发规则"""
     success = iptables_manager.delete_rule(port)
     return jsonify({'success': success})
 
 @app.route('/api/rules/batch', methods=['DELETE'])
+@login_required
 def delete_batch_rules():
     """批量删除转发规则"""
     ports = request.json.get('ports', [])
@@ -366,14 +395,36 @@ def delete_batch_rules():
     })
 
 @app.route('/api/ports/used', methods=['GET'])
+@login_required
 def get_used_ports():
     """获取所有已使用的端口"""
     return jsonify(iptables_manager.get_system_used_ports())
 
 # 提供静态文件服务
 @app.route('/')
+@login_required
 def index():
     return app.send_static_file('index.html')
+
+@app.route('/login')
+def login_page():
+    if session.get('logged_in'):
+        return redirect('/')
+    return app.send_static_file('login.html')
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    password = data.get('password')
+    if password == AUTH_TOKEN:
+        session['logged_in'] = True
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'message': 'Invalid password'}), 401
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    session.pop('logged_in', None)
+    return jsonify({'success': True})
 
 if __name__ == '__main__':
     # 确保以root权限运行

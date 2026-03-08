@@ -12,7 +12,10 @@
 </head>
 <body>
     <div class="container">
-        <h2>端口转发管理面板</h2>
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>端口转发管理面板</h2>
+            <button class="btn btn-outline-danger btn-sm" onclick="logout()">退出登录</button>
+        </div>
         
         <!-- 添加转发表单 -->
         <div class="card mt-4">
@@ -91,6 +94,27 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
     <script>
+        // 通用 API 请求处理
+        async function fetchApi(url, options = {}) {
+            try {
+                const response = await fetch(url, options);
+                if (response.status === 401) {
+                    window.location.href = '/login';
+                    return null;
+                }
+                return response;
+            } catch (error) {
+                console.error('API Error:', error);
+                throw error;
+            }
+        }
+
+        // 退出登录
+        async function logout() {
+            await fetchApi('/api/logout', { method: 'POST' });
+            window.location.href = '/login';
+        }
+
         // 监听模式切换
         document.querySelectorAll('input[name="mode"]').forEach(radio => {
             radio.addEventListener('change', function() {
@@ -107,9 +131,13 @@
 
         // 获取所有规则
         function loadRules() {
-            fetch('/api/rules')
-                .then(response => response.json())
+            fetchApi('/api/rules')
+                .then(response => {
+                    if (!response) return;
+                    return response.json();
+                })
                 .then(data => {
+                    if (!data) return;
                     allRules = data; // 保存所有规则
                     displayRules(data); // 显示规则
                 });
@@ -201,30 +229,38 @@
                 };
             } else if (mode === 'manual') {
                 const specifiedPorts = document.getElementById('specifiedPorts').value;
-                const ports = specifiedPorts.split(',').map(p => p.trim()).filter(p => p);
-                const rules = ipList.split('\n').filter(rule => rule.trim());
-                
-                if (ports.length !== rules.length) {
-                    alert(`指定端口数量(${ports.length})与规则数量(${rules.length})不匹配！`);
+                if (!specifiedPorts) {
+                    alert('请输入指定的端口！');
                     addButton.disabled = false;
                     return;
                 }
                 
-                if (!ports.every(port => /^\d+$/.test(port) && port >= 1 && port <= 65535)) {
-                    alert('端口格式不正确，请输入1-65535之间的数字！');
+                const ports = specifiedPorts.split(/[,，]/).map(p => p.trim()).filter(p => p);
+                if (ports.length === 0) {
+                    alert('请输入有效的端口！');
                     addButton.disabled = false;
                     return;
                 }
+                
+                // 验证所有端口
+                for (let port of ports) {
+                    if (!/^\d+$/.test(port) || port < 1 || port > 65535) {
+                        alert(`端口 ${port} 格式不正确！`);
+                        addButton.disabled = false;
+                        return;
+                    }
+                }
+                
                 portData = {
                     type: 'manual',
                     ports: ports
                 };
             }
-            
-            fetch('/api/rules', {
+
+            fetchApi('/api/rules', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
                     mode: mode,
@@ -232,84 +268,95 @@
                     port_data: portData
                 })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response) return;
+                return response.json();
+            })
             .then(data => {
+                if (!data) return;
                 if (data.success) {
-                    loadRules();
+                    alert(data.message);
                     document.getElementById('ipList').value = '';
-                    if (mode === 'specific') {
-                        document.getElementById('startPort').value = '';
-                    } else if (mode === 'manual') {
-                        document.getElementById('specifiedPorts').value = '';
-                    }
-                    alert('添加成功！');
+                    document.getElementById('specifiedPorts').value = '';
+                    loadRules();
                 } else {
-                    alert('添加失败：' + data.message);
-                    if (data.occupied_ports && data.occupied_ports.length > 0) {
-                        alert('以下端口已被占用：' + data.occupied_ports.join(', '));
+                    if (data.occupied_ports) {
+                        alert(`添加失败：${data.message}\n占用端口：${data.occupied_ports.join(', ')}`);
+                    } else {
+                        alert('添加失败：' + data.message);
                     }
                 }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('添加失败，请重试');
             })
             .finally(() => {
                 addButton.disabled = false;
             });
         }
 
-        // 删除单个规则
+        // 删除规则
         function deleteRule(port) {
-            if (confirm('确定要删除该规则吗？')) {
-                fetch(`/api/rules/${port}`, {
+            if (confirm(`确定要删除端口 ${port} 的转发规则吗？`)) {
+                fetchApi(`/api/rules/${port}`, {
                     method: 'DELETE'
                 })
-                .then(response => response.json())
+                .then(response => {
+                    if (!response) return;
+                    return response.json();
+                })
                 .then(data => {
-                    loadRules();
-                    alert(data.success ? '删除成功' : '删除失败：' + data.message);
+                    if (!data) return;
+                    if (data.success) {
+                        loadRules();
+                        updateSelectedCount(); // 更新选中状态
+                    } else {
+                        alert('删除失败');
+                    }
                 });
             }
         }
 
-        // 删除选中的规则
+        // 批量删除
         function deleteSelected() {
-            const deleteButton = document.getElementById('deleteButton');
-            deleteButton.disabled = true; // 禁用按钮
-            const selected = Array.from(document.querySelectorAll('input[type="checkbox"]:checked'))
-                .map(cb => cb.value)
-                .filter(val => val);
-            
-            if (selected.length === 0) {
-                alert('请选择要删除的规则！');
-                deleteButton.disabled = false; // 恢复按钮
+            if (selectedPorts.size === 0) {
+                alert('请先选择要删除的规则');
                 return;
             }
-        
-            if (confirm('确定要删除选中的规则吗？')) {
-                fetch('/api/rules/batch', {
+
+            if (confirm(`确定要删除选中的 ${selectedPorts.size} 个规则吗？`)) {
+                const ports = Array.from(selectedPorts);
+                fetchApi('/api/rules/batch', {
                     method: 'DELETE',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        ports: selected
-                    })
+                    body: JSON.stringify({ ports: ports })
                 })
-                .then(response => response.json())
+                .then(response => {
+                    if (!response) return;
+                    return response.json();
+                })
                 .then(data => {
-                    loadRules();
+                    if (!data) return;
                     if (data.success) {
-                        alert('批量删除成功！已删除端口：' + data.deleted_ports.join(', '));
-                        if (data.failed_ports.length > 0) {
-                            alert('未能删除以下端口：' + data.failed_ports.join(', '));
-                        }
+                        alert('删除成功');
+                        selectedPorts.clear();
+                        document.getElementById('selectedCount').textContent = '已选 0 个端口';
+                        // 重置全选框
+                        const headerCheckbox = document.querySelector('thead input[type="checkbox"]');
+                        if (headerCheckbox) headerCheckbox.checked = false;
+                        loadRules();
                     } else {
-                        alert('操作完成！');
+                        let msg = '部分规则删除失败';
+                        if (data.failed_ports && data.failed_ports.length > 0) {
+                            msg += `\n失败端口: ${data.failed_ports.join(', ')}`;
+                        }
+                        alert(msg);
+                        loadRules();
                     }
-                })
-                .finally(() => {
-                    deleteButton.disabled = false; // 恢复按钮
                 });
-            } else {
-                deleteButton.disabled = false; // 恢复按钮
             }
         }
 
