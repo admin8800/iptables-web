@@ -5,9 +5,11 @@ import socket
 import json
 from contextlib import closing
 from functools import wraps
+from datetime import timedelta
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24))
+app.permanent_session_lifetime = timedelta(days=90)
 AUTH_TOKEN = os.environ.get('AUTH_TOKEN')
 
 def login_required(f):
@@ -418,6 +420,7 @@ def login():
     password = data.get('password')
     if password == AUTH_TOKEN:
         session['logged_in'] = True
+        session.permanent = True
         return jsonify({'success': True})
     return jsonify({'success': False, 'message': 'Invalid password'}), 401
 
