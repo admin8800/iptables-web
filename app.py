@@ -6,11 +6,58 @@ import json
 from contextlib import closing
 from functools import wraps
 from datetime import timedelta
+import ipaddress
+import time
+from collections import defaultdict
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24))
 app.permanent_session_lifetime = timedelta(days=90)
 AUTH_TOKEN = os.environ.get('AUTH_TOKEN')
+
+# 简单的内存限流器
+class SimpleRateLimiter:
+    def __init__(self, max_attempts=5, window_seconds=60):
+        self.attempts = defaultdict(list)
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self.max_keys = 10000  # 最大记录数，防止内存泄漏
+
+    def get_client_key(self, ip_str):
+        """生成客户端标识：IPv4原样返回，IPv6返回/64子网"""
+        try:
+            ip = ipaddress.ip_address(ip_str)
+            if isinstance(ip, ipaddress.IPv6Address):
+                # IPv6: 归一化到 /64 子网
+                # 将IP转为二进制，掩码前64位
+                network = ipaddress.ip_network(f"{ip_str}/64", strict=False)
+                return str(network.network_address)
+            return str(ip)
+        except ValueError:
+            return ip_str
+
+    def is_allowed(self, ip_str):
+        key = self.get_client_key(ip_str)
+        now = time.time()
+        
+        # 清理过期记录
+        self.attempts[key] = [t for t in self.attempts[key] if now - t < self.window_seconds]
+        
+        # 检查是否超过限制
+        if len(self.attempts[key]) >= self.max_attempts:
+            return False
+            
+        # 记录本次尝试
+        self.attempts[key].append(now)
+        
+        # 防止内存泄漏：如果key太多，简单地清空
+        if len(self.attempts) > self.max_keys:
+            self.attempts.clear()
+            
+        return True
+
+# 初始化限流器：每分钟最多5次尝试
+rate_limiter = SimpleRateLimiter(max_attempts=5, window_seconds=60)
 
 def login_required(f):
     @wraps(f)
@@ -416,6 +463,18 @@ def login_page():
 
 @app.route('/api/login', methods=['POST'])
 def login():
+    # 获取真实客户端IP (处理反向代理)
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if client_ip:
+        client_ip = client_ip.split(',')[0].strip()
+    
+    # 检查速率限制
+    if not rate_limiter.is_allowed(client_ip):
+        return jsonify({
+            'success': False, 
+            'message': 'Too many login attempts. Please try again later.'
+        }), 429
+
     data = request.json
     password = data.get('password')
     if password == AUTH_TOKEN:
