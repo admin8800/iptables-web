@@ -1,10 +1,5 @@
 #!/bin/bash
 
-# 支持命令行参数指定密码
-if [ ! -z "$1" ]; then
-    AUTH_TOKEN="$1"
-fi
-
 # 检查并安装 curl 和 wget
 for pkg in curl wget; do
     if ! dpkg -l | grep -q "^ii  $pkg"; then
@@ -31,21 +26,11 @@ if docker ps --format '{{.Names}}' | grep -q 'iptables-web'; then
 else
     echo "iptables-web 容器未启动，正在启动..."
     
-    # 生成随机密码
-    if [ -z "$AUTH_TOKEN" ]; then
-        AUTH_TOKEN=$(openssl rand -base64 12)
-        echo "生成的随机管理密码: $AUTH_TOKEN"
-        echo "请妥善保存！"
-    else
-        echo "使用环境变量提供的管理密码"
-    fi
-
     docker run -d \
         --name iptables-web \
         --privileged \
         --network host \
         --restart always \
-        -e AUTH_TOKEN="$AUTH_TOKEN" \
         -v ./data:/app/data \
-        ghcr.io/admin8800/iptables-web
+        ghcr.io/admin8800/iptables-web:1.13
 fi
